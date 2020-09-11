@@ -106,7 +106,7 @@ public abstract class LeapArray<T> {
     }
 
     /**
-     * Get bucket item at provided timestamp.
+     * 根据当前时间来确定处于哪一个滑动窗口中
      *
      * @param timeMillis a valid timestamp in milliseconds
      * @return current bucket item at provided timestamp if the time is valid; null if time is invalid
@@ -115,20 +115,28 @@ public abstract class LeapArray<T> {
         if (timeMillis < 0) {
             return null;
         }
-
+        /**
+         * 计算当前时间会落在一个采集间隔(LeapArray)中哪一个时间窗口中，
+         * 即在 LeapArray 中属性 AtomicReferenceArray > array 的下标。其实现算法如下：
+         * - 首先用当前时间除以一个时间窗口的时间间隔，得出当前时间是多少个时间窗口的倍数，用 n 表示
+         * - 然后我们可以看出从一系列时间窗口，从 0 开始，一起向前滚动 n 隔得到当前时间戳代表的时间窗口的位置。现在我们要定位到这个时间窗口的位置是落在 LeapArray 中数组的下标，而一个 LeapArray 中包含 sampleCount 个元素，要得到其下标，则使用 n % sampleCount 即可
+         */
         int idx = calculateTimeIdx(timeMillis);
-        // Calculate current bucket start time.
+        // 计算当前时间戳所在的时间窗口的开始时间，即要计算出 WindowWrap 中 windowStart 的值，
+        // 其实就是要算出小于当前时间戳，并且是 windowLengthInMs 的整数倍最大的数字，Sentinel 给出是算法为 ( timeMillis - timeMillis % windowLengthInMs )
         long windowStart = calculateWindowStart(timeMillis);
 
         /*
-         * Get bucket item at given time from the array.
-         *
-         * (1) Bucket is absent, then just create a new bucket and CAS update to circular array.
-         * (2) Bucket is up-to-date, then just return the bucket.
-         * (3) Bucket is deprecated, then reset current bucket and clean all deprecated buckets.
+         * 根据当前时间从数组中来确定处于哪一个滑动窗口中
+         * 死循环查找当前的时间窗口，这里之所有需要循环，是因为可能多个线程都在获取当前时间窗口
+         * (1) Bucket不存在：只需创建新的Bucket，CAS 更新到环形数组。
+         * (2) Bucket是最新的, 只需返回Bucket
+         * (3) Bucket过期的, 重置当前Bucket并清理所有过期的buckets.
          */
         while (true) {
+            // 尝试从 LeapArray 中的 WindowWrap 数组查找指定下标的元素
             WindowWrap<T> old = array.get(idx);
+            // 如果指定下标的元素为空，则需要创建一个 WindowWrap 。其中 WindowWrap 中的 MetricBucket 是调用其抽象方法 newEmptyBucket (timeMillis)，由不同的子类去实现
             if (old == null) {
                 /*
                  *     B0       B1      B2    NULL      B4
@@ -136,13 +144,13 @@ public abstract class LeapArray<T> {
                  * 200     400     600     800     1000    1200  timestamp
                  *                             ^
                  *                          time=888
-                 *            bucket is empty, so create new and update
-                 *
-                 * If the old bucket is absent, then we create a new bucket at {@code windowStart},
-                 * then try to update circular array via a CAS operation. Only one thread can
-                 * succeed to update, while other threads yield its time slice.
+                 *            bucket是空的, so创建新bucket并更新
+                 * 如果旧bucket不存在，则我们在 windows 创建一个新bucket，然后通过 CAS 操作更新循环数组
+                 * 只有一个线程可以成功更新，而其他线程让出其时间片，变成就绪状态。
                  */
                 WindowWrap<T> window = new WindowWrap<T>(windowLengthInMs, windowStart, newEmptyBucket(timeMillis));
+                // 使用了 CAS 机制来更新 LeapArray 数组中的 元素，因为同一时间戳，可能有多个线程都在获取当前时间窗口对象，但该时间窗口对象还未创建，这里就是避免创建多个，导致统计数据被覆盖，
+                // 如果用 CAS 更新成功的线程，则返回新建好的 WindowWrap ，CAS 设置不成功的线程继续跑这个流程，然后会进入到代码@6
                 if (array.compareAndSet(idx, null, window)) {
                     // Successfully updated, return the created bucket.
                     return window;
@@ -150,6 +158,7 @@ public abstract class LeapArray<T> {
                     // Contention failed, the thread will yield its time slice to wait for bucket available.
                     Thread.yield();
                 }
+            // 如果指定索引下的时间窗口对象不为空并判断起始时间相等，则返回
             } else if (windowStart == old.windowStart()) {
                 /*
                  *     B0       B1      B2     B3      B4
@@ -163,6 +172,7 @@ public abstract class LeapArray<T> {
                  * that means the time is within the bucket, so directly return the bucket.
                  */
                 return old;
+            // 如果原先存在的窗口开始时间小于当前时间戳计算出来的开始时间，则表示 bucket 已被弃用。则需要将开始时间重置到新时间戳对应的开始时间戳，重置的逻辑将在下文详细介绍
             } else if (windowStart > old.windowStart()) {
                 /*
                  *   (old)
@@ -192,6 +202,7 @@ public abstract class LeapArray<T> {
                     // Contention failed, the thread will yield its time slice to wait for bucket available.
                     Thread.yield();
                 }
+            // 应该不会进入到该分支，因为当前时间算出来时间窗口不会比之前的小
             } else if (windowStart < old.windowStart()) {
                 // Should not go through here, as the provided time is already behind.
                 return new WindowWrap<T>(windowLengthInMs, windowStart, newEmptyBucket(timeMillis));
@@ -209,14 +220,15 @@ public abstract class LeapArray<T> {
         if (timeMillis < 0) {
             return null;
         }
+        // 用当前时间减去一个时间窗口间隔，然后去定位所在 LeapArray 中 数组的下标
         int idx = calculateTimeIdx(timeMillis - windowLengthInMs);
         timeMillis = timeMillis - windowLengthInMs;
         WindowWrap<T> wrap = array.get(idx);
-
+        // 如果为空或已过期，则返回 null
         if (wrap == null || isWindowDeprecated(wrap)) {
             return null;
         }
-
+        // 如果定位的窗口的开始时间再加上 windowLengthInMs 小于 timeMills ，说明失效，则返回 null，通常是不会走到该分支
         if (wrap.windowStart() + windowLengthInMs < (timeMillis)) {
             return null;
         }

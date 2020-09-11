@@ -34,13 +34,21 @@ import com.alibaba.csp.sentinel.util.function.Predicate;
  * @author Eric Zhao
  */
 public class ArrayMetric implements Metric {
-
+    /**
+     * ArrayMetric 类唯一的属性，用来存储各个窗口的数据，这个是接下来我们探究的重点
+     */
     private final LeapArray<MetricBucket> data;
 
     public ArrayMetric(int sampleCount, int intervalInMs) {
         this.data = new OccupiableBucketLeapArray(sampleCount, intervalInMs);
     }
 
+    /**
+     * 构造方法
+     * @param enableOccupy：是否允许抢占，即当前时间戳已经达到限制后，是否可以占用下一个时间窗口的容量，这里对应 LeapArray 的两个实现类，如果允许抢占，则为 OccupiableBucketLeapArray，否则为 BucketLeapArray
+     * @param sampleCount：在一个采集间隔中抽样的个数，默认为 2，例如当 intervalInMs = 1000时，抽象两次，则一个采集间隔中会包含两个相等的区间，一个区间就是滑动窗口
+     * @param intervalInMs：表示一个采集的时间间隔，例如1秒，1分钟
+     */
     public ArrayMetric(int sampleCount, int intervalInMs, boolean enableOccupy) {
         if (enableOccupy) {
             this.data = new OccupiableBucketLeapArray(sampleCount, intervalInMs);

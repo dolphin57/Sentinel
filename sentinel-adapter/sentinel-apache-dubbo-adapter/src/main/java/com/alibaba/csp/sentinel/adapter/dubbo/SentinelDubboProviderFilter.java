@@ -60,18 +60,21 @@ public class SentinelDubboProviderFilter extends BaseSentinelDubboFilter {
         Entry interfaceEntry = null;
         Entry methodEntry = null;
         try {
+            // 如果启用前缀，默认服务提供者的资源会加上前缀：dubbo:provider:，可以通过在配置文件中配置属性 csp.sentinel.dubbo.resource.provider.prefix 改变其默认值
             String methodResourceName = DubboUtils.getResourceName(invoker, invocation, DubboConfig.getDubboProviderPrefix());
             String interfaceResourceName = DubboConfig.getDubboInterfaceGroupAndVersionEnabled() ? invoker.getUrl().getColonSeparatedKey()
                     : invoker.getInterface().getName();
             // Only need to create entrance context at provider side, as context will take effect
             // at entrance of invocation chain only (for inbound traffic).
             ContextUtil.enter(methodResourceName, application);
+            // 服务端调用 SphU.entry 时其进入类型为 EntryType.IN
             interfaceEntry = SphU.entry(interfaceResourceName, ResourceTypeConstants.COMMON_RPC, EntryType.IN);
             rpcContext.set(DubboUtils.DUBBO_INTERFACE_ENTRY_KEY, interfaceEntry);
             methodEntry = SphU.entry(methodResourceName, ResourceTypeConstants.COMMON_RPC, EntryType.IN, invocation.getArguments());
             rpcContext.set(DubboUtils.DUBBO_METHOD_ENTRY_KEY, methodEntry);
             return invoker.invoke(invocation);
         } catch (BlockException e) {
+            // 同样可以在 抛出阻塞异常(BlockException) 时指定快速失败回调处理逻辑
             return DubboFallbackRegistry.getProviderFallback().handle(invoker, invocation, e);
         }
     }

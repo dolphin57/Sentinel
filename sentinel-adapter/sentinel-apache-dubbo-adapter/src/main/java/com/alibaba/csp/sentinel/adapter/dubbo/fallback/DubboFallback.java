@@ -30,7 +30,7 @@ import org.apache.dubbo.rpc.Result;
 public interface DubboFallback {
 
     /**
-     * Handle the block exception and provide fallback result.
+     * 处理块异常并提供回退结果。
      *
      * @param invoker Dubbo invoker
      * @param invocation Dubbo invocation
